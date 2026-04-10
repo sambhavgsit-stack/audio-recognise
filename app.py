@@ -455,7 +455,7 @@ with tab1:
                         </div>
                         """, unsafe_allow_html=True)
                     with col_gauge:
-                        st.plotly_chart(make_gauge(conf, gender), use_container_width=True, config={"displayModeBar": False})
+                        st.plotly_chart(make_gauge(conf, gender), key="gauge_chart", config={"displayModeBar": False}, use_container_width=True)
 
                     st.markdown("""
                     <div style="display:flex;align-items:center;gap:0.7rem;margin:1.1rem 0 0.75rem;">
@@ -464,7 +464,7 @@ with tab1:
                       <div style="flex:1;height:1px;background:#21262d;"></div>
                     </div>
                     """, unsafe_allow_html=True)
-                    st.plotly_chart(make_mel_fig(y, sr, gender), use_container_width=True, config={"displayModeBar": False})
+                    st.plotly_chart(make_mel_fig(y, sr, gender), key="mel_chart", config={"displayModeBar": False}, use_container_width=True)
 
                 except Exception as e:
                     st.error(f"Analysis failed: {e}")
@@ -519,21 +519,21 @@ with tab2:
           Confidence Timeline<span style="flex:1;height:1px;background:#21262d;display:block;"></span>
         </div>
         """, unsafe_allow_html=True)
-        st.plotly_chart(chart_timeline(hist), use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(chart_timeline(hist), key="timeline_chart", config={"displayModeBar": False}, use_container_width=True)
     with c2:
         st.markdown("""
         <div style="font-family:'JetBrains Mono',monospace;font-size:0.52rem;letter-spacing:2.5px;text-transform:uppercase;color:#d4860a;margin-bottom:0.5rem;display:flex;align-items:center;gap:0.5rem;">
           Gender Split<span style="flex:1;height:1px;background:#21262d;display:block;"></span>
         </div>
         """, unsafe_allow_html=True)
-        st.plotly_chart(chart_gender(hist), use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(chart_gender(hist), key="gender_chart", config={"displayModeBar": False}, use_container_width=True)
 
     st.markdown("""
     <div style="font-family:'JetBrains Mono',monospace;font-size:0.52rem;letter-spacing:2.5px;text-transform:uppercase;color:#d4860a;margin-bottom:0.5rem;display:flex;align-items:center;gap:0.5rem;">
       Confidence Distribution<span style="flex:1;height:1px;background:#21262d;display:block;"></span>
     </div>
     """, unsafe_allow_html=True)
-    st.plotly_chart(chart_dist(hist), use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(chart_dist(hist), key="dist_chart", config={"displayModeBar": False}, use_container_width=True)
 
 # ── HISTORY ───────────────────────────────────────────────────────────────────
 with tab3:
