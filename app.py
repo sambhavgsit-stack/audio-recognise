@@ -155,80 +155,111 @@ MODEL_PATH = "gender_model.h5"
 @st.cache_resource
 def load_model():
     if not os.path.exists(MODEL_PATH):
+        st.error("Model file not found.")
         return None
-    try:
-        # Use tf_keras (Keras 2 API) if available — handles models saved with older Keras
-        try:
-            import tf_keras as keras
-        except ImportError:
-            import tensorflow as tf
-            keras = tf.keras
 
+    try:
         import tensorflow as tf
         import h5py, json
 
-        # ── Attempt 1: standard load via tf_keras ─────────────────────────────
+        # ── Attempt 1: tf_keras (best for older Keras models) ─────────────────
         try:
-            m = keras.models.load_model(MODEL_PATH, compile=False)
+            import tf_keras as keras
+            m = keras.models.load_model(
+                MODEL_PATH,
+                compile=False,
+                safe_mode=False
+            )
             return m
-        except Exception:
-            pass
+        except Exception as e:
+            print("tf_keras load failed:", e)
 
-        # ── Attempt 2: standard tf.keras load ────────────────────────────────
+        # ── Attempt 2: standard tf.keras load (with safe_mode fix) ────────────
         try:
-            m = tf.keras.models.load_model(MODEL_PATH, compile=False)
+            m = tf.keras.models.load_model(
+                MODEL_PATH,
+                compile=False,
+                safe_mode=False   # 🔥 important fix
+            )
             return m
-        except Exception:
-            pass
+        except Exception as e:
+            print("tf.keras load failed:", e)
 
-        # ── Attempt 2: deep-clean ALL dtype dict objects & bad keys ──────────
-        with h5py.File(MODEL_PATH, 'r') as f:
-            raw_cfg = f.attrs.get('model_config', None)
-            if raw_cfg is None:
-                raise ValueError("No model_config in HDF5 file")
-            model_config = json.loads(raw_cfg)
+        # ── Debug: print model config (helps identify real architecture) ─────
+        try:
+            with h5py.File(MODEL_PATH, 'r') as f:
+                raw_cfg = f.attrs.get('model_config', None)
+                print("\n🔍 MODEL CONFIG:\n")
+                print(raw_cfg if raw_cfg else "No model_config found\n")
+        except Exception as e:
+            print("Config read failed:", e)
 
-        STRIP_KEYS = {'quantization_config', 'optional', 'ragged'}
+        # ── Attempt 3: Clean config + rebuild model ──────────────────────────
+        try:
+            with h5py.File(MODEL_PATH, 'r') as f:
+                raw_cfg = f.attrs.get('model_config', None)
+                if raw_cfg is None:
+                    raise ValueError("No model_config in HDF5 file")
 
-        def clean_config(obj):
-            if isinstance(obj, dict):
-                # Strip bad keys
-                for k in list(obj.keys()):
-                    if k in STRIP_KEYS:
-                        del obj[k]
-                # Fix dtype: if it's a dict (Keras type policy), flatten to string
-                if 'dtype' in obj and isinstance(obj['dtype'], dict):
-                    inner = obj['dtype']
-                    # e.g. {'module': 'keras', 'class_name': 'DTypePolicy', 'config': {'name': 'float32'}}
-                    cfg = inner.get('config', {})
-                    obj['dtype'] = cfg.get('name', 'float32')
-                # Fix InputLayer batch_shape → batch_input_shape
-                if obj.get('class_name') == 'InputLayer':
-                    inner = obj.get('config', {})
-                    if 'batch_shape' in inner and 'batch_input_shape' not in inner:
-                        inner['batch_input_shape'] = inner.pop('batch_shape')
-                    for k in list(inner.keys()):
+                model_config = json.loads(raw_cfg)
+
+            STRIP_KEYS = {'quantization_config', 'optional', 'ragged'}
+
+            def clean_config(obj):
+                if isinstance(obj, dict):
+                    # remove problematic keys
+                    for k in list(obj.keys()):
                         if k in STRIP_KEYS:
-                            del inner[k]
-                    if 'dtype' in inner and isinstance(inner['dtype'], dict):
-                        cfg = inner['dtype'].get('config', {})
-                        inner['dtype'] = cfg.get('name', 'float32')
-                for v in list(obj.values()):
-                    clean_config(v)
-            elif isinstance(obj, list):
-                for item in obj:
-                    clean_config(item)
+                            del obj[k]
 
-        clean_config(model_config)
+                    # fix dtype issue
+                    if 'dtype' in obj and isinstance(obj['dtype'], dict):
+                        obj['dtype'] = obj['dtype'].get('config', {}).get('name', 'float32')
 
-        try:
+                    # fix InputLayer issues
+                    if obj.get('class_name') == 'InputLayer':
+                        cfg = obj.get('config', {})
+                        if 'batch_shape' in cfg and 'batch_input_shape' not in cfg:
+                            cfg['batch_input_shape'] = cfg.pop('batch_shape')
+
+                        for k in list(cfg.keys()):
+                            if k in STRIP_KEYS:
+                                del cfg[k]
+
+                        if 'dtype' in cfg and isinstance(cfg['dtype'], dict):
+                            cfg['dtype'] = cfg['dtype'].get('config', {}).get('name', 'float32')
+
+                    # recursive clean
+                    for v in obj.values():
+                        clean_config(v)
+
+                elif isinstance(obj, list):
+                    for item in obj:
+                        clean_config(item)
+
+            clean_config(model_config)
+
+            # rebuild model
             m = tf.keras.models.model_from_json(json.dumps(model_config))
+
+            # load weights safely
             m.load_weights(MODEL_PATH)
+
+            return m
+
+        except Exception as e:
+            print("Reconstruction failed:", e)
+
+        # ── Final fallback ────────────────────────────────────────────────────
+        st.error("❌ Model could not be loaded. Architecture mismatch likely.")
+        return None
 
     except Exception as e:
         st.error(f"Model load failed: {e}")
         return None
 
+
+# ── Load model ───────────────────────────────────────────────────────────────
 model = load_model()
 MODEL_LOADED = model is not None
 
