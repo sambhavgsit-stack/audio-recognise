@@ -224,26 +224,6 @@ def load_model():
         try:
             m = tf.keras.models.model_from_json(json.dumps(model_config))
             m.load_weights(MODEL_PATH)
-            return m
-        except Exception:
-            pass
-
-        # ── Attempt 3: rebuild CNN architecture matching expected input shape ─
-        # Input shape from original model: (128, 94, 1) → mel spectrogram
-        inp = tf.keras.Input(shape=(128, 94, 1), name='input_layer')
-        x = tf.keras.layers.Conv2D(32, (3,3), activation='relu', padding='same')(inp)
-        x = tf.keras.layers.MaxPooling2D((2,2))(x)
-        x = tf.keras.layers.Conv2D(64, (3,3), activation='relu', padding='same')(x)
-        x = tf.keras.layers.MaxPooling2D((2,2))(x)
-        x = tf.keras.layers.Conv2D(128, (3,3), activation='relu', padding='same')(x)
-        x = tf.keras.layers.MaxPooling2D((2,2))(x)
-        x = tf.keras.layers.Flatten()(x)
-        x = tf.keras.layers.Dense(64, activation='relu')(x)
-        x = tf.keras.layers.Dropout(0.3)(x)
-        out = tf.keras.layers.Dense(1, activation='sigmoid')(x)
-        m = tf.keras.Model(inputs=inp, outputs=out)
-        m.load_weights(MODEL_PATH)
-        return m
 
     except Exception as e:
         st.error(f"Model load failed: {e}")
