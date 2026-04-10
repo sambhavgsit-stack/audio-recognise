@@ -160,20 +160,34 @@ def load_model():
         import tensorflow as tf
         import h5py, json
 
-        # Try standard load first
+        # ── Attempt 1: standard load ──────────────────────────────────────────
         try:
             m = tf.keras.models.load_model(MODEL_PATH, compile=False)
             return m
         except Exception:
             pass
 
-        # Fallback: strip unsupported keys (quantization_config) from layer configs
+        # ── Attempt 2: strip ALL incompatible keys from layer configs ─────────
         with h5py.File(MODEL_PATH, 'r') as f:
-            model_config = json.loads(f.attrs['model_config'])
+            raw_cfg = f.attrs.get('model_config', None)
+            if raw_cfg is None:
+                raise ValueError("No model_config found in HDF5 file")
+            model_config = json.loads(raw_cfg)
+
+        # Keys that exist in newer Keras but not TF2.x Keras
+        STRIP_KEYS = {'quantization_config', 'optional', 'ragged'}
 
         def clean_config(cfg):
             if isinstance(cfg, dict):
-                cfg.pop('quantization_config', None)
+                for k in STRIP_KEYS:
+                    cfg.pop(k, None)
+                # Fix InputLayer: rename batch_shape -> batch_input_shape
+                if cfg.get('class_name') == 'InputLayer':
+                    inner = cfg.get('config', {})
+                    if 'batch_shape' in inner and 'batch_input_shape' not in inner:
+                        inner['batch_input_shape'] = inner.pop('batch_shape')
+                    for k in STRIP_KEYS:
+                        inner.pop(k, None)
                 for v in cfg.values():
                     clean_config(v)
             elif isinstance(cfg, list):
@@ -182,16 +196,20 @@ def load_model():
 
         clean_config(model_config)
 
-        m = tf.keras.models.model_from_json(json.dumps(model_config))
+        # Try building from cleaned config
+        try:
+            m = tf.keras.models.model_from_json(json.dumps(model_config))
+        except Exception:
+            # Last resort: use legacy Sequential/Functional rebuild
+            m = tf.keras.models.model_from_json(
+                json.dumps(model_config),
+                custom_objects={}
+            )
 
-        # Load weights only
-        with h5py.File(MODEL_PATH, 'r') as f:
-            if 'model_weights' in f:
-                m.load_weights(MODEL_PATH)
-            elif 'layer_names' in f.attrs:
-                m.load_weights(MODEL_PATH)
-
+        # Load weights
+        m.load_weights(MODEL_PATH)
         return m
+
     except Exception as e:
         st.error(f"Model load failed: {e}")
         return None
@@ -511,7 +529,7 @@ with tab1:
                         </div>
                         """, unsafe_allow_html=True)
                     with col_gauge:
-                        st.plotly_chart(make_gauge(conf, gender), key="gauge_chart", config={"displayModeBar": False}, use_container_width=True)
+                        st.plotly_chart(make_gauge(conf, gender), key="gauge_chart", config={"displayModeBar": False}, width="stretch")
 
                     st.markdown("""
                     <div style="display:flex;align-items:center;gap:0.7rem;margin:1.1rem 0 0.75rem;">
@@ -520,7 +538,7 @@ with tab1:
                       <div style="flex:1;height:1px;background:#21262d;"></div>
                     </div>
                     """, unsafe_allow_html=True)
-                    st.plotly_chart(make_mel_fig(y, sr, gender), key="mel_chart", config={"displayModeBar": False}, use_container_width=True)
+                    st.plotly_chart(make_mel_fig(y, sr, gender), key="mel_chart", config={"displayModeBar": False}, width="stretch")
 
                 except Exception as e:
                     st.error(f"Analysis failed: {e}")
@@ -575,21 +593,21 @@ with tab2:
           Confidence Timeline<span style="flex:1;height:1px;background:#21262d;display:block;"></span>
         </div>
         """, unsafe_allow_html=True)
-        st.plotly_chart(chart_timeline(hist), key="timeline_chart", config={"displayModeBar": False}, use_container_width=True)
+        st.plotly_chart(chart_timeline(hist), key="timeline_chart", config={"displayModeBar": False}, width="stretch")
     with c2:
         st.markdown("""
         <div style="font-family:'JetBrains Mono',monospace;font-size:0.52rem;letter-spacing:2.5px;text-transform:uppercase;color:#d4860a;margin-bottom:0.5rem;display:flex;align-items:center;gap:0.5rem;">
           Gender Split<span style="flex:1;height:1px;background:#21262d;display:block;"></span>
         </div>
         """, unsafe_allow_html=True)
-        st.plotly_chart(chart_gender(hist), key="gender_chart", config={"displayModeBar": False}, use_container_width=True)
+        st.plotly_chart(chart_gender(hist), key="gender_chart", config={"displayModeBar": False}, width="stretch")
 
     st.markdown("""
     <div style="font-family:'JetBrains Mono',monospace;font-size:0.52rem;letter-spacing:2.5px;text-transform:uppercase;color:#d4860a;margin-bottom:0.5rem;display:flex;align-items:center;gap:0.5rem;">
       Confidence Distribution<span style="flex:1;height:1px;background:#21262d;display:block;"></span>
     </div>
     """, unsafe_allow_html=True)
-    st.plotly_chart(chart_dist(hist), key="dist_chart", config={"displayModeBar": False}, use_container_width=True)
+    st.plotly_chart(chart_dist(hist), key="dist_chart", config={"displayModeBar": False}, width="stretch")
 
 # ── HISTORY ───────────────────────────────────────────────────────────────────
 with tab3:
