@@ -157,56 +157,91 @@ def load_model():
     if not os.path.exists(MODEL_PATH):
         return None
     try:
+        # Use tf_keras (Keras 2 API) if available — handles models saved with older Keras
+        try:
+            import tf_keras as keras
+        except ImportError:
+            import tensorflow as tf
+            keras = tf.keras
+
         import tensorflow as tf
         import h5py, json
 
-        # ── Attempt 1: standard load ──────────────────────────────────────────
+        # ── Attempt 1: standard load via tf_keras ─────────────────────────────
+        try:
+            m = keras.models.load_model(MODEL_PATH, compile=False)
+            return m
+        except Exception:
+            pass
+
+        # ── Attempt 2: standard tf.keras load ────────────────────────────────
         try:
             m = tf.keras.models.load_model(MODEL_PATH, compile=False)
             return m
         except Exception:
             pass
 
-        # ── Attempt 2: strip ALL incompatible keys from layer configs ─────────
+        # ── Attempt 2: deep-clean ALL dtype dict objects & bad keys ──────────
         with h5py.File(MODEL_PATH, 'r') as f:
             raw_cfg = f.attrs.get('model_config', None)
             if raw_cfg is None:
-                raise ValueError("No model_config found in HDF5 file")
+                raise ValueError("No model_config in HDF5 file")
             model_config = json.loads(raw_cfg)
 
-        # Keys that exist in newer Keras but not TF2.x Keras
         STRIP_KEYS = {'quantization_config', 'optional', 'ragged'}
 
-        def clean_config(cfg):
-            if isinstance(cfg, dict):
-                for k in STRIP_KEYS:
-                    cfg.pop(k, None)
-                # Fix InputLayer: rename batch_shape -> batch_input_shape
-                if cfg.get('class_name') == 'InputLayer':
-                    inner = cfg.get('config', {})
+        def clean_config(obj):
+            if isinstance(obj, dict):
+                # Strip bad keys
+                for k in list(obj.keys()):
+                    if k in STRIP_KEYS:
+                        del obj[k]
+                # Fix dtype: if it's a dict (Keras type policy), flatten to string
+                if 'dtype' in obj and isinstance(obj['dtype'], dict):
+                    inner = obj['dtype']
+                    # e.g. {'module': 'keras', 'class_name': 'DTypePolicy', 'config': {'name': 'float32'}}
+                    cfg = inner.get('config', {})
+                    obj['dtype'] = cfg.get('name', 'float32')
+                # Fix InputLayer batch_shape → batch_input_shape
+                if obj.get('class_name') == 'InputLayer':
+                    inner = obj.get('config', {})
                     if 'batch_shape' in inner and 'batch_input_shape' not in inner:
                         inner['batch_input_shape'] = inner.pop('batch_shape')
-                    for k in STRIP_KEYS:
-                        inner.pop(k, None)
-                for v in cfg.values():
+                    for k in list(inner.keys()):
+                        if k in STRIP_KEYS:
+                            del inner[k]
+                    if 'dtype' in inner and isinstance(inner['dtype'], dict):
+                        cfg = inner['dtype'].get('config', {})
+                        inner['dtype'] = cfg.get('name', 'float32')
+                for v in list(obj.values()):
                     clean_config(v)
-            elif isinstance(cfg, list):
-                for item in cfg:
+            elif isinstance(obj, list):
+                for item in obj:
                     clean_config(item)
 
         clean_config(model_config)
 
-        # Try building from cleaned config
         try:
             m = tf.keras.models.model_from_json(json.dumps(model_config))
+            m.load_weights(MODEL_PATH)
+            return m
         except Exception:
-            # Last resort: use legacy Sequential/Functional rebuild
-            m = tf.keras.models.model_from_json(
-                json.dumps(model_config),
-                custom_objects={}
-            )
+            pass
 
-        # Load weights
+        # ── Attempt 3: rebuild CNN architecture matching expected input shape ─
+        # Input shape from original model: (128, 94, 1) → mel spectrogram
+        inp = tf.keras.Input(shape=(128, 94, 1), name='input_layer')
+        x = tf.keras.layers.Conv2D(32, (3,3), activation='relu', padding='same')(inp)
+        x = tf.keras.layers.MaxPooling2D((2,2))(x)
+        x = tf.keras.layers.Conv2D(64, (3,3), activation='relu', padding='same')(x)
+        x = tf.keras.layers.MaxPooling2D((2,2))(x)
+        x = tf.keras.layers.Conv2D(128, (3,3), activation='relu', padding='same')(x)
+        x = tf.keras.layers.MaxPooling2D((2,2))(x)
+        x = tf.keras.layers.Flatten()(x)
+        x = tf.keras.layers.Dense(64, activation='relu')(x)
+        x = tf.keras.layers.Dropout(0.3)(x)
+        out = tf.keras.layers.Dense(1, activation='sigmoid')(x)
+        m = tf.keras.Model(inputs=inp, outputs=out)
         m.load_weights(MODEL_PATH)
         return m
 
