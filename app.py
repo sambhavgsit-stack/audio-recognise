@@ -150,6 +150,11 @@ audio { width: 100% !important; background: #0d1117 !important; border-radius: 6
 """, unsafe_allow_html=True)
 
 # ── Model loading ─────────────────────────────────────────────────────────────
+
+import tensorflow as tf
+import os
+import streamlit as st
+
 MODEL_PATH = "gender_model.h5"
 
 @st.cache_resource
@@ -159,107 +164,40 @@ def load_model():
         return None
 
     try:
-        import tensorflow as tf
-        import h5py, json
+        # ── Rebuild EXACT architecture ─────────────────────────────────────
+        inp = tf.keras.Input(shape=(128, 94, 1), name="input_layer")
 
-        # ── Attempt 1: tf_keras (best for older Keras models) ─────────────────
-        try:
-            import tf_keras as keras
-            m = keras.models.load_model(
-                MODEL_PATH,
-                compile=False,
-                safe_mode=False
-            )
-            return m
-        except Exception as e:
-            print("tf_keras load failed:", e)
+        x = tf.keras.layers.Conv2D(32, (3,3), activation='relu', padding='same')(inp)
+        x = tf.keras.layers.MaxPooling2D((2,2))(x)
 
-        # ── Attempt 2: standard tf.keras load (with safe_mode fix) ────────────
-        try:
-            m = tf.keras.models.load_model(
-                MODEL_PATH,
-                compile=False,
-                safe_mode=False   # 🔥 important fix
-            )
-            return m
-        except Exception as e:
-            print("tf.keras load failed:", e)
+        x = tf.keras.layers.Conv2D(64, (3,3), activation='relu', padding='same')(x)
+        x = tf.keras.layers.MaxPooling2D((2,2))(x)
 
-        # ── Debug: print model config (helps identify real architecture) ─────
-        try:
-            with h5py.File(MODEL_PATH, 'r') as f:
-                raw_cfg = f.attrs.get('model_config', None)
-                print("\n🔍 MODEL CONFIG:\n")
-                print(raw_cfg if raw_cfg else "No model_config found\n")
-        except Exception as e:
-            print("Config read failed:", e)
+        # VERY IMPORTANT PART (from your config)
+        x = tf.keras.layers.Reshape((-1, 64))(x)
 
-        # ── Attempt 3: Clean config + rebuild model ──────────────────────────
-        try:
-            with h5py.File(MODEL_PATH, 'r') as f:
-                raw_cfg = f.attrs.get('model_config', None)
-                if raw_cfg is None:
-                    raise ValueError("No model_config in HDF5 file")
+        # 🔥 Bidirectional layer (THIS was missing before)
+        x = tf.keras.layers.Bidirectional(
+            tf.keras.layers.LSTM(64, return_sequences=False)
+        )(x)
 
-                model_config = json.loads(raw_cfg)
+        x = tf.keras.layers.Dense(64, activation='relu')(x)
+        x = tf.keras.layers.Dropout(0.3)(x)
 
-            STRIP_KEYS = {'quantization_config', 'optional', 'ragged'}
+        out = tf.keras.layers.Dense(1, activation='sigmoid')(x)
 
-            def clean_config(obj):
-                if isinstance(obj, dict):
-                    # remove problematic keys
-                    for k in list(obj.keys()):
-                        if k in STRIP_KEYS:
-                            del obj[k]
+        model = tf.keras.Model(inputs=inp, outputs=out)
 
-                    # fix dtype issue
-                    if 'dtype' in obj and isinstance(obj['dtype'], dict):
-                        obj['dtype'] = obj['dtype'].get('config', {}).get('name', 'float32')
+        # ── Load weights ───────────────────────────────────────────────────
+        model.load_weights(MODEL_PATH)
 
-                    # fix InputLayer issues
-                    if obj.get('class_name') == 'InputLayer':
-                        cfg = obj.get('config', {})
-                        if 'batch_shape' in cfg and 'batch_input_shape' not in cfg:
-                            cfg['batch_input_shape'] = cfg.pop('batch_shape')
-
-                        for k in list(cfg.keys()):
-                            if k in STRIP_KEYS:
-                                del cfg[k]
-
-                        if 'dtype' in cfg and isinstance(cfg['dtype'], dict):
-                            cfg['dtype'] = cfg['dtype'].get('config', {}).get('name', 'float32')
-
-                    # recursive clean
-                    for v in obj.values():
-                        clean_config(v)
-
-                elif isinstance(obj, list):
-                    for item in obj:
-                        clean_config(item)
-
-            clean_config(model_config)
-
-            # rebuild model
-            m = tf.keras.models.model_from_json(json.dumps(model_config))
-
-            # load weights safely
-            m.load_weights(MODEL_PATH)
-
-            return m
-
-        except Exception as e:
-            print("Reconstruction failed:", e)
-
-        # ── Final fallback ────────────────────────────────────────────────────
-        st.error("❌ Model could not be loaded. Architecture mismatch likely.")
-        return None
+        return model
 
     except Exception as e:
         st.error(f"Model load failed: {e}")
         return None
 
 
-# ── Load model ───────────────────────────────────────────────────────────────
 model = load_model()
 MODEL_LOADED = model is not None
 
