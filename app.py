@@ -158,7 +158,39 @@ def load_model():
         return None
     try:
         import tensorflow as tf
-        m = tf.keras.models.load_model(MODEL_PATH, compile=False)
+        import h5py, json
+
+        # Try standard load first
+        try:
+            m = tf.keras.models.load_model(MODEL_PATH, compile=False)
+            return m
+        except Exception:
+            pass
+
+        # Fallback: strip unsupported keys (quantization_config) from layer configs
+        with h5py.File(MODEL_PATH, 'r') as f:
+            model_config = json.loads(f.attrs['model_config'])
+
+        def clean_config(cfg):
+            if isinstance(cfg, dict):
+                cfg.pop('quantization_config', None)
+                for v in cfg.values():
+                    clean_config(v)
+            elif isinstance(cfg, list):
+                for item in cfg:
+                    clean_config(item)
+
+        clean_config(model_config)
+
+        m = tf.keras.models.model_from_json(json.dumps(model_config))
+
+        # Load weights only
+        with h5py.File(MODEL_PATH, 'r') as f:
+            if 'model_weights' in f:
+                m.load_weights(MODEL_PATH)
+            elif 'layer_names' in f.attrs:
+                m.load_weights(MODEL_PATH)
+
         return m
     except Exception as e:
         st.error(f"Model load failed: {e}")
@@ -394,11 +426,34 @@ with tab1:
     </div>
     """, unsafe_allow_html=True)
 
-    audio_file = st.file_uploader("Voice Recording", type=["wav", "mp3", "ogg", "m4a", "flac"])
+    # ── Input mode toggle ─────────────────────────────────────────────────────
+    input_mode = st.radio(
+        "Input Mode",
+        ["📁 Upload File", "🎙 Live Recording"],
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+
+    audio_source = None
+
+    if input_mode == "📁 Upload File":
+        audio_source = st.file_uploader("Voice Recording", type=["wav", "mp3", "ogg", "m4a", "flac"])
+        suffix = ".wav"
+        if audio_source:
+            suffix = os.path.splitext(audio_source.name)[1] or ".wav"
+    else:
+        st.markdown("""
+        <div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:0.8rem 1rem;margin-bottom:0.5rem;">
+          <div style="font-family:'JetBrains Mono',monospace;font-size:0.5rem;letter-spacing:2px;text-transform:uppercase;color:#d4860a;margin-bottom:0.3rem;">🎙 Microphone Input</div>
+          <div style="font-size:0.8rem;color:#a0aab4;">Click the mic below to record. Allow microphone access when prompted.</div>
+        </div>
+        """, unsafe_allow_html=True)
+        audio_source = st.audio_input("Record your voice", label_visibility="collapsed")
+        suffix = ".wav"
 
     analyze_clicked = st.button("⟶  Analyze Voice", type="primary")
 
-    if analyze_clicked and audio_file is not None:
+    if analyze_clicked and audio_source is not None:
         if not MODEL_LOADED:
             st.markdown("""
             <div style="background:#0d1117;border:1px solid rgba(240,112,144,.35);border-radius:8px;padding:1.5rem;text-align:center;margin:1rem 0;">
@@ -410,8 +465,9 @@ with tab1:
         else:
             with st.spinner("Analyzing voice..."):
                 try:
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(audio_file.name)[1]) as tmp:
-                        tmp.write(audio_file.read())
+                    raw = audio_source.read() if hasattr(audio_source, "read") else audio_source.getvalue()
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                        tmp.write(raw)
                         tmp_path = tmp.name
 
                     y, sr = librosa.load(tmp_path, sr=16000)
@@ -474,11 +530,11 @@ with tab1:
         <div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:2rem 1.1rem;text-align:center;margin:1rem 0;">
           <div style="font-family:'JetBrains Mono',monospace;font-size:0.5rem;letter-spacing:3px;text-transform:uppercase;color:#6e7681;margin-bottom:0.5rem;">AWAITING INPUT</div>
           <div style="font-family:'Fraunces',serif;font-size:2.5rem;color:#6e7681;margin:0.5rem 0;">🎙</div>
-          <div style="font-family:'JetBrains Mono',monospace;font-size:0.67rem;color:#a0aab4;margin-top:0.5rem;">Upload audio and tap Analyze</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:0.67rem;color:#a0aab4;margin-top:0.5rem;">Upload a file or record your voice, then tap Analyze</div>
         </div>
         """, unsafe_allow_html=True)
-    elif analyze_clicked and audio_file is None:
-        st.warning("Please upload an audio file first.")
+    elif analyze_clicked and audio_source is None:
+        st.warning("Please upload a file or record your voice first.")
 
 # ── DASHBOARD ─────────────────────────────────────────────────────────────────
 with tab2:
